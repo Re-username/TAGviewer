@@ -1,0 +1,1268 @@
+@page "/"
+@page "/index.html"
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using System.Text.RegularExpressions
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>Просмотрщик тегов ПЛК</PageTitle>
+
+@{
+    @* ====== Единый интерфейс: основное окно и вынесенные окна ======
+       В режиме view (ViewTabId != null) скрыты только файловые операции;
+       поиск, навигация, копирование и подвкладки работают как в основном окне. *@
+    <div class="app-header">
+        @if (ViewTabId == null)
+        {
+            <div class="app-title">Просмотрщик тегов</div>
+        }
+        else
+        {
+            <div class="app-title" title="@ViewTitle">@ViewTitle</div>
+        }
+        <div class="search-wrap">
+            <input class="search-box" placeholder="Поиск по имени и комментарию… (Ctrl+F)" @onkeydown="OnSearchKey"
+                   @bind="Filter" @bind:event="oninput" @bind:after="OnFilterChanged" @ref="_searchRef" />
+            @if (!string.IsNullOrEmpty(Filter))
+            {
+                <button class="search-clear" title="Очистить поиск (Esc)" @onclick="ClearFilter" @onclick:stopPropagation="true">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+            }
+        </div>
+        <select class="btn filter-select" title="Фильтр по типу данных" @bind="TypeFilter" @bind:after="Refresh">
+            <option value="">Все типы</option>
+            <option value="BOOL">BOOL</option>
+            <option value="INT">Целые (INT, DINT…)</option>
+            <option value="REAL">REAL / LREAL</option>
+            <option value="STRING">STRING / CHAR</option>
+            <option value="TIME">TIME / DATE</option>
+            <option value="STRUCT">Структуры</option>
+            <option value="ARRAY">Массивы</option>
+        </select>
+        @if (ViewTabId == null)
+        {
+            <button class="btn primary" @onclick="OpenFiles">Открыть файл…</button>
+            <button class="btn @(AnyChanged ? "attention" : "")" title="Перечитать файл активного источника (F5)"
+                    disabled="@(Current == null)" @onclick="() => RefreshSource(Current)">
+                Обновить@(AnyChanged ? " ●" : "")
+            </button>
+            <button class="btn" @onclick="ClearAll">Очистить</button>
+        }
+        else
+        {
+            <span style="color:var(--text-soft);font-size:12px;white-space:nowrap;">Отдельное окно · синхронизация каждые 3 с</span>
+        }
+        <button class="btn icon" title="Тема: @(Theme == "light" ? "светлая" : Theme == "dark" ? "тёмная" : "киберпанк") — F12 переключает" @onclick="ToggleTheme">
+            @if (Theme == "cyberpunk")
+            {
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2" /><path d="M6 9l3 3-3 3M12 15h6" /></svg>
+            }
+            else if (Theme == "dark")
+            {
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+            }
+            else
+            {
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" /></svg>
+            }
+        </button>
+        <button class="btn icon" title="Настройки интерфейса" @onclick="OpenSettings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z" /></svg>
+        </button>
+        <button class="btn icon" title="Справка (F1)" @onclick="() => _showHelp = true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M9.2 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4" /><circle cx="12" cy="17.2" r="0.4" fill="currentColor" /></svg>
+        </button>
+        <InputFile OnChange="OnFilesChosen" multiple style="display:none" @ref="_fileInput" />
+    </div>
+
+    @if (ViewTabId == null && _pendingHandles.Count > 0)
+    {
+        <div class="access-banner">
+            <span>Файлы помнятся по путям — нажмите, чтобы разрешить доступ (@_pendingHandles.Count):</span>
+            <button class="btn primary" @onclick="GrantAccess">Разрешить доступ к файлам</button>
+        </div>
+    }
+
+    @if (Errors.Count > 0)
+    {
+        <div class="error-box">
+            <span>@string.Join("  ·  ", Errors)</span>
+            <button @onclick="() => Errors.Clear()">✕</button>
+        </div>
+    }
+
+    @if (ViewTabId == null && Sources.Count > 0)
+    {
+        <div class="sources-bar">
+            @for (int i = 0; i < Sources.Count; i++)
+            {
+                var idx = i;
+                var src = Sources[idx];
+                <div class="source-tab @(idx == ActiveSource ? "active" : "") @(src.ChangedOnDisk ? "changed" : "")"
+                     title="@($"{src.FilePath ?? src.FileName}\n{src.Vendor} · обновлён {src.LoadedAt:dd.MM.yyyy HH:mm:ss}")"
+                     @onclick="() => SelectSource(idx)">
+                    @src.FileName
+                    <span class="cnt">@src.CountLeaves()</span>
+                    @if (src.ChangedOnDisk) { <span class="changed-dot" title="Файл на диске изменился — нажмите «Обновить»"></span> }
+                    <button class="close" title="Вынести файл в отдельное окно" @onclick="() => DetachSource(src)" @onclick:stopPropagation="true">⧉</button>
+                    <button class="close" title="Закрыть" @onclick="() => RemoveSource(idx)" @onclick:stopPropagation="true">✕</button>
+                </div>
+            }
+        </div>
+    }
+
+    @if (Sources.Count > 0)
+    {
+        <div class="tabs-bar">
+            <div class="tag-tab @(ActiveTabId == null ? "active" : "")" title="Все теги файла @(Current?.FileName)" @onclick="() => SelectTab(null)">Все теги</div>
+            @foreach (var tab in VisibleTabs)
+            {
+                var tabSrcPath = Sources.FirstOrDefault(s => s.FileName == tab.SourceFile)?.FilePath ?? tab.SourceFile;
+                <div class="tag-tab @(ActiveTabId == tab.Id ? "active" : "")" @onclick="() => SelectTab(tab.Id)"
+                     title="@($"{tabSrcPath}\nветка: {tab.RootPath}")">
+                    @tab.Title
+                    <button class="close" title="Вынести в отдельное окно" @onclick="() => DetachTab(tab)" @onclick:stopPropagation="true">⧉</button>
+                    <button class="close" title="Закрыть вкладку" @onclick="() => CloseTab(tab.Id)" @onclick:stopPropagation="true">✕</button>
+                </div>
+            }
+        </div>
+    }
+
+    <div class="main">
+        <div class="tree-panel" tabindex="0" @onkeydown="OnTreeKey" @onkeydown:preventDefault="_preventKeys">
+            @if (DisplayedRoots.Count == 0)
+            {
+                @if (ViewTabId != null)
+                {
+                    <div style="color:var(--text-soft);padding:24px;">
+                        @(ViewSynced
+                            ? "Вкладка была закрыта в основном окне."
+                            : "Ожидание синхронизации с основным окном…")
+                    </div>
+                }
+                else if (Sources.Count == 0)
+                {
+                    <label class="dropzone">
+                        <InputFile OnChange="OnFilesChosen" multiple />
+                        <svg viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4L8 8" /><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
+                        <div><b>Перетащите файлы сюда</b> или нажмите, чтобы выбрать</div>
+                        <div class="dz-formats">XML · EXPORT · TXT · CSV · ST<br />CODESYS: Symbol XML, PLCopen, декларации ST · SYSMAC Studio: таблицы TXT/CSV</div>
+                    </label>
+                }
+                else
+                {
+                    <div style="color:var(--text-soft);padding:24px;">По заданным фильтрам ничего не найдено.</div>
+                }
+            }
+            else
+            {
+                @foreach (var root in DisplayedRoots)
+                {
+                    if (Matches(root))
+                    {
+                        <TagNodeView @key="root.FullPath" Node="@root" Parent="@this" />
+                    }
+                }
+            }
+        </div>
+
+        <div class="details-panel">
+            @if (SelectedNode == null)
+            {
+                <div class="det-empty">Выберите тег в дереве<br /><br />Двойной клик по узлу —<br />открыть его в отдельной вкладке</div>
+            }
+            else
+            {
+                <div class="det-label">Имя</div>
+                <div class="det-value">@SelectedNode.Name</div>
+                <div class="det-label">Полный путь</div>
+                <div class="det-value">@SelectedNode.FullPath</div>
+                <div class="det-label">Вид</div>
+                <div class="det-value">@KindName(SelectedNode)@(SelectedNode.ElementCount > 0 ? $" · {SelectedNode.ElementCount} элем." : "")</div>
+                <div class="det-label">Тип</div>
+                <div class="det-value">@(string.IsNullOrEmpty(SelectedNode.TypeName) ? "—" : SelectedNode.TypeName)</div>
+                <div class="det-label">Адрес</div>
+                <div class="det-value">@(string.IsNullOrEmpty(SelectedNode.Address) ? "—" : SelectedNode.Address)</div>
+                <div class="det-label">Комментарий</div>
+                <textarea class="det-comment" readonly>@SelectedNode.Comment</textarea>
+                <div class="det-actions">
+                    <button class="btn" @onclick='() => Copy(SelectedNode.Name, "имя")'>Копировать имя</button>
+                    <button class="btn" @onclick='() => Copy(SelectedNode.FullPath, "путь")'>Копировать путь</button>
+                </div>
+                <div class="det-actions">
+                    <button class="btn" disabled="@string.IsNullOrEmpty(SelectedNode.Comment)"
+                            @onclick='() => Copy(SelectedNode.Comment, "комментарий")'>Копировать комментарий</button>
+                    @if (!string.IsNullOrEmpty(SelectedNode.Address))
+                    {
+                        <button class="btn" @onclick='() => Copy(SelectedNode.Address, "адрес")'>Копировать адрес</button>
+                    }
+                </div>
+                @if (CopyNotice)
+                {
+                    <div style="color:var(--accent);margin-top:8px;font-size:12px;">Скопировано: @CopyWhat</div>
+                }
+            }
+        </div>
+    </div>
+
+    <div class="status-bar">
+        @if (ViewTabId == null)
+        {
+            <span>@RuPlural(Sources.Count, "файл")</span>
+            <span>@RuPlural(TotalTags, "тег")</span>
+            @if (Current != null)
+            {
+                <span>@Current.Vendor</span>
+                <span>Обновлён: @Current.LoadedAt.ToString("dd.MM.yyyy HH:mm:ss")</span>
+            }
+            <span class="spacer"></span>
+            <span>Ctrl+O файл · Ctrl+F поиск · F5 обновить · Ctrl+C путь · Ctrl+Shift+C имя · Ctrl+Alt+C коммент · F1 справка</span>
+        }
+        else
+        {
+            <span>@ViewSourceInfo</span>
+            <span class="spacer"></span>
+            <span>Ctrl+F поиск · Ctrl+C путь · Ctrl+Shift+C имя · Ctrl+Alt+C коммент · −/+ свернуть/развернуть · F1 справка</span>
+        }
+    </div>
+
+    @if (_showHelp)
+    {
+        <div class="modal-overlay" @onclick="() => _showHelp = false">
+            <div class="modal help-modal" @onclick:stopPropagation="true">
+                <div class="modal-title">Просмотрщик тегов ПЛК — справка
+                    <button class="close" @onclick="() => _showHelp = false">✕</button>
+                </div>
+                <h4>Файлы</h4>
+                <p>Перетащите файлы в окно или нажмите «Открыть файл…». Поддерживаются:
+                   CODESYS Symbol Configuration (.xml), PLCopen XML / Application Composer,
+                   текстовый экспорт деклараций (ST), таблицы SYSMAC Studio (TXT/CSV из .smc2).
+                   Кодировки UTF-8 и Windows-1251 определяются автоматически.</p>
+                <h4>Обновление файлов</h4>
+                <p>Файлы, открытые через диалог или перетащенные (в окне приложения на базе Chromium),
+                   запоминаются: при изменении файла на диске кнопка «Обновить» и чип файла
+                   подсвечиваются автоматически — достаточно одного нажатия F5.
+                   Файлы и вкладки сохраняются между запусками приложения.</p>
+                <h4>Горячие клавиши</h4>
+                <table class="help-keys">
+                    <tr><td>Ctrl+O</td><td>открыть файлы</td></tr>
+                    <tr><td>Ctrl+F</td><td>поиск по имени и комментарию</td></tr>
+                    <tr><td>F5</td><td>обновить активный файл</td></tr>
+                    <tr><td>↑ ↓ ← →</td><td>навигация по дереву</td></tr>
+                    <tr><td>Enter</td><td>раскрыть узел / открыть лист во вкладке</td></tr>
+                    <tr><td>Ctrl+Enter</td><td>открыть узел во вкладке</td></tr>
+                    <tr><td>Пробел</td><td>выбрать узел и раскрыть</td></tr>
+                    <tr><td>− (минус)</td><td>свернуть текущий массив/структуру</td></tr>
+                    <tr><td>+ (плюс)</td><td>развернуть текущий узел</td></tr>
+                    <tr><td>Esc в поиске</td><td>очистить строку поиска</td></tr>
+                    <tr><td>Ctrl+C</td><td>скопировать полный путь тега</td></tr>
+                    <tr><td>Ctrl+Shift+C</td><td>скопировать имя тега</td></tr>
+                    <tr><td>Ctrl+Alt+C</td><td>скопировать комментарий</td></tr>
+                    <tr><td>F1</td><td>эта справка</td></tr>
+                    <tr><td>F12</td><td>тёмная/светлая тема</td></tr>
+                </table>
+                <h4>Вкладки</h4>
+                <p>Двойной клик по узлу открывает его в отдельной вкладке.
+                   Кнопка ⧉ выносит вкладку в отдельное окно. Вкладки сохраняются
+                   между запусками. Наведение курсора на вкладку показывает файл и полный путь тега.</p>
+            </div>
+        </div>
+    }
+
+    @if (_showSettings)
+    {
+        <div class="modal-overlay" @onclick="() => _showSettings = false">
+            <div class="modal settings-modal" @onclick:stopPropagation="true">
+                <div class="modal-title">Настройки интерфейса
+                    <button class="close" @onclick="() => _showSettings = false">✕</button>
+                </div>
+                <div class="set-row">
+                    <label>Тема</label>
+                    <select value="@Theme" @onchange="OnThemeChanged">
+                        <option value="light">Светлая</option>
+                        <option value="dark">Тёмная</option>
+                        <option value="cyberpunk">Киберпанк</option>
+                    </select>
+                </div>
+                <div class="set-row">
+                    <label>Шрифт</label>
+                    <select @bind="UiFont">
+                        <option value="system">Системный</option>
+                        <option value="segoe">Segoe UI</option>
+                        <option value="consolas">Consolas</option>
+                        <option value="cascadia">Cascadia Mono</option>
+                        <option value="courier">Courier New</option>
+                    </select>
+                </div>
+                <div class="set-row">
+                    <label>Размер шрифта</label>
+                    <select @bind="UiFontSize">
+                        @for (var s = 11; s <= 20; s++)
+                        {
+                            <option value="@s">@s px</option>
+                        }
+                    </select>
+                </div>
+                <div class="set-row">
+                    <label>Плотность строк</label>
+                    <select @bind="UiDensity">
+                        <option value="compact">Компактно</option>
+                        <option value="normal">Стандарт</option>
+                        <option value="roomy">Просторно</option>
+                    </select>
+                </div>
+                <p class="set-hint">Настройки сохраняются и действуют во всех окнах приложения, включая вынесенные.</p>
+                <div class="set-actions">
+                    <button class="btn" @onclick="ResetSettings">Сбросить</button>
+                    <button class="btn primary" @onclick="ApplySettings">Применить</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    // ======== модель вкладки ========
+    public sealed class TabInfo
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+        public string SourceFile { get; set; } = "";
+        public string RootPath { get; set; } = "";
+        public string Title { get; set; } = "";
+    }
+
+    // DTO для сохранения сессии
+    private sealed class SavedState
+    {
+        public int Version { get; set; } = 1;
+        public List<SavedSource> Sources { get; set; } = new();
+        public List<TabInfo> Tabs { get; set; } = new();
+        public string? ActiveTab { get; set; }
+        public int ActiveSource { get; set; }
+    }
+    private sealed class SavedSource
+    {
+        public string FileName { get; set; } = "";
+        public string? FilePath { get; set; }
+        public string Vendor { get; set; } = "";
+        public string? HandleId { get; set; }
+        public long LastModified { get; set; }
+        public DateTime LoadedAt { get; set; }
+        public List<TagNode> Roots { get; set; } = new();
+    }
+    // Восстановленный из IndexedDB хэндл
+    private sealed class JsHandleInfo
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public double Modified { get; set; }
+        public string Permission { get; set; } = "";
+    }
+    // Файл из JS (drop / picker)
+    public sealed class JsFile
+    {
+        public string? Id { get; set; }
+        public string? Path { get; set; }
+        public string Name { get; set; } = "";
+        public long Size { get; set; }
+        public double Modified { get; set; }
+        public byte[]? Bytes { get; set; }
+    }
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        IncludeFields = true,
+        // Populate: заполнять существующие коллекции (readonly List/HashSet в TagNode/TagSource)
+        PreferredObjectCreationHandling = JsonObjectCreationHandling.Populate
+    };
+
+    public List<TagSource> Sources { get; } = new();
+    public List<TabInfo> Tabs { get; } = new();
+    public int ActiveSource { get; private set; } = -1;
+    public string? ActiveTabId { get; private set; }
+    public TagNode? SelectedNode { get; set; }
+    public TagNode? KeyboardNode { get; set; }
+    public string Filter { get; set; } = "";
+    public string TypeFilter { get; set; } = "";
+    public string Theme { get; private set; } = "dark";
+    private bool _showHelp;
+    public bool CopyNotice { get; private set; }
+
+    private string CopyWhat = "";
+    private List<string> Errors { get; } = new();
+    private readonly HashSet<TagNode> _expanded = new();
+    private ElementReference _searchRef;
+    private InputFile? _fileInput;
+    private DotNetObjectReference<Home>? _selfRef;
+    private PeriodicTimer? _watchTimer;
+    private CancellationTokenSource? _watchCts;
+    private bool _preventKeys;
+
+    // --- режим отдельного окна ---
+    private string? ViewTabId;
+    private bool ViewSynced;
+    private string ViewTitle = "Вкладка";
+    private string ViewSourceInfo = "";
+
+    private TagSource? Current =>
+        ActiveSource >= 0 && ActiveSource < Sources.Count ? Sources[ActiveSource] : null;
+
+    private bool AnyChanged => Sources.Any(s => s.ChangedOnDisk);
+    private int TotalTags => Sources.Sum(s => s.CountLeaves());
+
+    /// <summary>Вкладки текущего файла — у каждого файла свои подвкладки.</summary>
+    private List<TabInfo> VisibleTabs =>
+        Tabs.Where(t => t.SourceFile == (Current?.FileName ?? "")).ToList();
+
+    private List<TagNode> DisplayedRoots
+    {
+        get
+        {
+            var tab = Tabs.FirstOrDefault(t => t.Id == ActiveTabId);
+            if (tab != null)
+            {
+                var src = Sources.FirstOrDefault(s => s.FileName == tab.SourceFile);
+                var node = src?.Roots.SelectMany(r => r.All()).FirstOrDefault(n => n.FullPath == tab.RootPath);
+                if (node != null) return new List<TagNode> { node };
+            }
+            return Current?.Roots ?? new List<TagNode>();
+        }
+    }
+
+    // ======== жизненный цикл ========
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        var t = await JS.InvokeAsync<string?>("plcTags.getTheme");
+        Theme = t is "light" or "dark" or "cyberpunk" ? t
+            : (await JS.InvokeAsync<bool>("eval", "matchMedia('(prefers-color-scheme: dark)').matches") ? "dark" : "light");
+
+        var query = await JS.InvokeAsync<string>("eval", "location.search");
+        var m = Regex.Match(query, @"[?&]view=([^&]+)");
+        if (m.Success)
+        {
+            ViewTabId = Uri.UnescapeDataString(m.Groups[1].Value);
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("plcTags.initGlobalKeys", _selfRef);
+            await SyncViewFromStorage();
+            StartViewPolling();
+        }
+        else
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("plcTags.initDrop", _selfRef);
+            await JS.InvokeVoidAsync("plcTags.initGlobalKeys", _selfRef);
+            await RestoreState();
+            await RestoreHandles();
+            if (Sources.Count == 0 && query.Contains("demo")) LoadDemo();
+            StartWatching();
+        }
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _watchCts?.Cancel();
+        _watchTimer?.Dispose();
+        _selfRef?.Dispose();
+        await Task.CompletedTask;
+    }
+
+    // ======== загрузка файлов ========
+
+    private async Task OpenFiles()
+    {
+        if (await JS.InvokeAsync<bool>("plcTags.fsSupported"))
+        {
+            var files = await JS.InvokeAsync<List<JsFile>>("plcTags.pickFiles");
+            if (files == null) return; // браузер не поддерживает — используем скрытый input
+            foreach (var f in files)
+            {
+                if (f.Bytes != null) { LoadOne(f); continue; } // exe-мост возвращает содержимое сразу
+                var data = await JS.InvokeAsync<JsFile?>("plcTags.readFileByHandle", f.Id);
+                if (data?.Bytes != null) LoadOne(data);
+            }
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("eval", "document.querySelector('.app-header input[type=file]').click()");
+        }
+    }
+
+    private async Task OnFilesChosen(InputFileChangeEventArgs e)
+    {
+        foreach (var file in e.GetMultipleFiles(20))
+        {
+            try
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: 64 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                LoadOne(new JsFile { Id = null, Name = file.Name, Modified = file.LastModified.UtcDateTime.Ticks / 10000.0, Bytes = ms.ToArray() });
+            }
+            catch (Exception ex) { Errors.Add(file.Name + ": " + ex.Message); }
+        }
+    }
+
+    [JSInvokable]
+    public void ToggleHelp() { _showHelp = !_showHelp; StateHasChanged(); }
+
+    // ======== настройки интерфейса ========
+    private bool _showSettings;
+    private string UiFont = "system";
+    private int UiFontSize = 13;
+    private string UiDensity = "normal";
+
+    public async Task OpenSettings()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("plcTags.getUi");
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                using var doc = JsonDocument.Parse(json);
+                var r = doc.RootElement;
+                if (r.TryGetProperty("ff", out var f)) UiFont = f.GetString() ?? "system";
+                if (r.TryGetProperty("fs", out var s) && s.TryGetInt32(out var sv)) UiFontSize = sv;
+                if (r.TryGetProperty("density", out var d)) UiDensity = d.GetString() ?? "normal";
+            }
+        }
+        catch { }
+        _showSettings = true;
+    }
+
+    private async Task ApplySettings()
+    {
+        var json = JsonSerializer.Serialize(new { ff = UiFont, fs = UiFontSize, density = UiDensity });
+        try { await JS.InvokeVoidAsync("plcTags.setUi", json); } catch { }
+        _showSettings = false;
+    }
+
+    private async Task ResetSettings()
+    {
+        UiFont = "system"; UiFontSize = 13; UiDensity = "normal";
+        await ApplySettings();
+    }
+
+    [JSInvokable]
+    public Task OnFilesDropped(List<JsFile> files)
+    {
+        foreach (var f in files) LoadOne(f);
+        if (files.Any(f => f.Id == null))
+            Errors.Add("Файл открыт перетаскиванием без привязки к пути — при нажатии «Обновить» откроется диалог с уже подставленным именем файла (один Enter).");
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private void LoadOne(JsFile f)
+    {
+        if (f.Bytes == null) return;
+        try
+        {
+            var src = TagParser.ParseBytes(f.Bytes, f.Name);
+            src.HandleId = f.Id;
+            src.FilePath = f.Path;
+            src.LastModified = (long)f.Modified;
+            src.LoadedAt = DateTime.Now;
+
+            var existing = Sources.FirstOrDefault(s => s.FileName == src.FileName);
+            if (existing != null)
+            {
+                DiffNewTags(existing, src);
+                existing.Roots.Clear();
+                existing.Roots.AddRange(src.Roots);
+                existing.Vendor = src.Vendor;
+                existing.HandleId = src.HandleId;
+                if (src.FilePath != null) existing.FilePath = src.FilePath;
+                existing.LastModified = src.LastModified;
+                existing.LoadedAt = src.LoadedAt;
+                existing.ChangedOnDisk = false;
+            }
+            else
+            {
+                Sources.Add(src);
+                ActiveSource = Sources.Count - 1;
+            }
+            SelectedNode = null;
+            _ = SaveState();
+        }
+        catch (Exception ex) { Errors.Add(f.Name + ": " + ex.Message); _ = JS.InvokeVoidAsync("plcTags.sfx", "error"); }
+    }
+
+    private static void DiffNewTags(TagSource oldSrc, TagSource newSrc)
+    {
+        var oldPaths = oldSrc.Roots.SelectMany(r => r.All()).Where(n => n.IsLeaf).Select(n => n.FullPath).ToHashSet();
+        oldSrc.NewPaths.Clear();
+        foreach (var p in newSrc.Roots.SelectMany(r => r.All()).Where(n => n.IsLeaf).Select(n => n.FullPath))
+            if (!oldPaths.Contains(p)) oldSrc.NewPaths.Add(p);
+    }
+
+    public bool IsNewTag(TagNode node) => Current?.NewPaths.Contains(node.FullPath) == true;
+
+    // ======== обновление файла ========
+
+    private async Task RefreshSource(TagSource? src)
+    {
+        if (src == null) return;
+        if (src.HandleId == null)
+        {
+            // Файл без хэндла (перетащили мышью / сетевой диск).
+            // Chromium: стандартный диалог выбора даёт хэндл — дальше обновления идут автоматически.
+            if (await JS.InvokeAsync<bool>("plcTags.fsSupported"))
+            {
+                // имя файла уже подставлено в диалог — достаточно одного Enter
+                var picked = await JS.InvokeAsync<List<JsFile>?>("plcTags.pickFiles", src.FileName);
+                if (picked == null || picked.Count == 0) return; // пользователь отменил
+                var data = picked[0].Bytes != null ? picked[0]
+                    : await JS.InvokeAsync<JsFile?>("plcTags.readFileByHandle", picked[0].Id);
+                if (data?.Bytes == null)
+                {
+                    Errors.Add(src.FileName + ": не удалось прочитать выбранный файл.");
+                    return;
+                }
+                LoadOne(data);
+                Errors.Clear();
+                return;
+            }
+            // Прочие браузеры: обычный диалог выбора файла (обновление через повторный выбор)
+            await JS.InvokeVoidAsync("plcTags.clickFileInput");
+            return;
+        }
+        var d = await JS.InvokeAsync<JsFile?>("plcTags.readFileByHandle", src.HandleId);
+        if (d?.Bytes == null)
+        {
+            Errors.Add(src.FileName + ": нет доступа к файлу (разрешение не выдано).");
+            return;
+        }
+        LoadOne(d);
+        Errors.Clear();
+    }
+
+    private void StartWatching()
+    {
+        _watchCts = new CancellationTokenSource();
+        _watchTimer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (await _watchTimer.WaitForNextTickAsync(_watchCts.Token))
+                {
+                    bool dirty = false;
+                    foreach (var src in Sources.Where(s => s.HandleId != null))
+                    {
+                        var mod = await JS.InvokeAsync<long>("plcTags.checkModified", src.HandleId, src.LastModified);
+                        if (mod != src.LastModified && !src.ChangedOnDisk) { src.ChangedOnDisk = true; dirty = true; }
+                    }
+                    if (dirty) await InvokeAsync(StateHasChanged);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception) { }
+        });
+    }
+
+    // ======== вкладки ========
+
+    public void OpenTabFor(TagNode node)
+    {
+        if (Current == null) return;
+        var existing = Tabs.FirstOrDefault(t => t.SourceFile == Current.FileName && t.RootPath == node.FullPath);
+        if (existing != null) { ActiveTabId = existing.Id; StateHasChanged(); return; }
+        var tab = new TabInfo
+        {
+            SourceFile = Current.FileName,
+            RootPath = node.FullPath,
+            Title = node.FullPath.Split('.').Last()
+        };
+        Tabs.Add(tab);
+        ActiveTabId = tab.Id;
+        _ = SaveState();
+        // dblclick обрабатывается дочерним TagNodeView — без этого рендерится только он,
+        // а панель вкладок (в Home) визуально отставала на одно действие
+        StateHasChanged();
+    }
+
+    private void SelectTab(string? id)
+    {
+        ActiveTabId = id;
+        var tab = Tabs.FirstOrDefault(t => t.Id == id);
+        if (tab != null)
+        {
+            var idx = Sources.FindIndex(s => s.FileName == tab.SourceFile);
+            if (idx >= 0) ActiveSource = idx;
+        }
+        SelectedNode = null;
+        _ = SaveState();
+    }
+
+    private void CloseTab(string id)
+    {
+        Tabs.RemoveAll(t => t.Id == id);
+        if (ActiveTabId == id) ActiveTabId = null;
+        _ = SaveState();
+    }
+
+    /// <summary>Вынести целый файл в отдельное окно (режим view по имени файла).</summary>
+    private async Task DetachSource(TagSource src)
+    {
+        await SaveState();
+        await JS.InvokeVoidAsync("plcTags.openTabWindow", "src:" + src.FileName);
+    }
+
+    private async Task DetachTab(TabInfo tab)
+    {
+        if (ViewTabId != null)
+        {
+            // В окне просмотра свои локальные вкладки: дописываем вкладку в общее состояние,
+            // чтобы новое окно смогло её найти (слиянием, не перезаписью чужих изменений).
+            var json = await JS.InvokeAsync<string?>("plcTags.loadState");
+            var st = json != null ? JsonSerializer.Deserialize<SavedState>(json, JsonOpts) : null;
+            if (st != null && !st.Tabs.Any(t => t.Id == tab.Id))
+            {
+                st.Tabs.Add(new TabInfo { Id = tab.Id, SourceFile = tab.SourceFile, RootPath = tab.RootPath, Title = tab.Title });
+                await JS.InvokeAsync<bool>("plcTags.saveState", JsonSerializer.Serialize(st, JsonOpts));
+            }
+        }
+        else
+        {
+            await SaveState();
+        }
+        await JS.InvokeVoidAsync("plcTags.openTabWindow", tab.Id);
+    }
+
+    // ======== отдельное окно ========
+
+    private string? _viewSignature;
+
+    /// <summary>Синхронизация view-окна с основным. true — данные изменились и нужен перерендер.</summary>
+    private async Task<bool> SyncViewFromStorage()
+    {
+        var json = await JS.InvokeAsync<string?>("plcTags.loadState");
+        if (json == null) return false;
+        try
+        {
+            var state = JsonSerializer.Deserialize<SavedState>(json, JsonOpts);
+            // Два режима: "src:ИмяФайла" — вынесенный файл целиком; иначе — id вкладки
+            bool isSourceView = ViewTabId != null && ViewTabId.StartsWith("src:", StringComparison.Ordinal);
+            TabInfo? tab = null;
+            SavedSource? src = null;
+            if (isSourceView)
+            {
+                var name = ViewTabId!["src:".Length..];
+                src = state?.Sources.FirstOrDefault(s => s.FileName == name);
+            }
+            else
+            {
+                tab = state?.Tabs.FirstOrDefault(t => t.Id == ViewTabId);
+                src = state?.Sources.FirstOrDefault(s => s.FileName == tab?.SourceFile);
+            }
+            if (src == null || (!isSourceView && tab == null))
+            {
+                if (Sources.Count > 0 || !ViewSynced)
+                {
+                    Sources.Clear();
+                    Tabs.Clear();
+                    ActiveSource = -1;
+                    ActiveTabId = null;
+                    SelectedNode = null;
+                    KeyboardNode = null;
+                    ViewSynced = state != null; // стейт есть, а цель исчезла — файл/вкладка закрыты
+                    _viewSignature = null;
+                    return true;
+                }
+                return false;
+            }
+            ViewSynced = true;
+            // Сигнатура: пересобираем дерево только при реальном изменении данных,
+            // иначе раскрытие/просмотр в окне постоянно сбрасывались бы.
+            string sig = string.Join("|",
+                src.FileName, tab?.RootPath ?? "", src.LoadedAt.Ticks,
+                src.Roots.Sum(r => r.CountLeaves()), state!.Tabs.Count);
+            if (sig == _viewSignature) return false;
+            _viewSignature = sig;
+
+            // Запоминаем раскрытые ветки по полным путям — переживают пересборку дерева
+            var expandedPaths = CollectExpandedPaths();
+            Sources.Clear();
+            foreach (var ss in state.Sources)
+            {
+                var s = new TagSource
+                {
+                    FileName = ss.FileName,
+                    FilePath = ss.FilePath,
+                    Vendor = ss.Vendor,
+                    HandleId = null, // в окне просмотра файловые операции недоступны
+                    LastModified = ss.LastModified,
+                    LoadedAt = ss.LoadedAt
+                };
+                s.Roots.AddRange(ss.Roots);
+                Sources.Add(s);
+            }
+            Tabs.Clear();
+            Tabs.AddRange(state.Tabs);
+            ActiveSource = Sources.FindIndex(s => s.FileName == src.FileName);
+            ActiveTabId = isSourceView ? null
+                : (Tabs.Any(t => t.Id == ViewTabId) ? ViewTabId : null);
+            SelectedNode = null;
+            KeyboardNode = null;
+            RestoreExpandedPaths(expandedPaths);
+
+            ViewTitle = isSourceView ? src.FileName : tab!.Title + " — " + src.FileName;
+            try { await JS.InvokeVoidAsync("plcTags.setTitle", ViewTitle); } catch { }
+            ViewSourceInfo = $"{src.FilePath ?? src.FileName} · обновлён {src.LoadedAt:dd.MM.yyyy HH:mm:ss} · {RuPlural(src.Roots.Sum(r => r.CountLeaves()), "тег")}";
+
+            // корень вкладки раскрываем по умолчанию, чтобы структура была видна
+            if (!isSourceView)
+            {
+                var root = DisplayedRoots.FirstOrDefault();
+                if (root != null && !IsExpanded(root)) ToggleExpanded(root);
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private HashSet<string> CollectExpandedPaths()
+    {
+        var set = new HashSet<string>();
+        foreach (var r in Sources.SelectMany(s => s.Roots))
+            foreach (var n in r.All())
+                if (_expanded.Contains(n)) set.Add(n.FullPath);
+        return set;
+    }
+
+    private void RestoreExpandedPaths(HashSet<string> paths)
+    {
+        _expanded.Clear();
+        foreach (var r in Sources.SelectMany(s => s.Roots))
+            foreach (var n in r.All())
+                if (paths.Contains(n.FullPath)) _expanded.Add(n);
+    }
+
+    private void StartViewPolling()
+    {
+        _watchCts = new CancellationTokenSource();
+        _watchTimer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (await _watchTimer.WaitForNextTickAsync(_watchCts.Token))
+                {
+                    if (await SyncViewFromStorage())
+                        await InvokeAsync(StateHasChanged);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception) { }
+        });
+    }
+
+    // ======== сохранение сессии ========
+
+    private async Task SaveState()
+    {
+        if (ViewTabId != null) return;
+        var state = new SavedState
+        {
+            ActiveTab = ActiveTabId,
+            ActiveSource = ActiveSource,
+            Tabs = Tabs.Select(t => new TabInfo { Id = t.Id, SourceFile = t.SourceFile, RootPath = t.RootPath, Title = t.Title }).ToList(),
+            Sources = Sources.Select(s => new SavedSource
+            {
+                FileName = s.FileName,
+                FilePath = s.FilePath,
+                Vendor = s.Vendor,
+                HandleId = s.HandleId,
+                LastModified = s.LastModified,
+                LoadedAt = s.LoadedAt,
+                Roots = s.Roots
+            }).ToList()
+        };
+        var ok = await JS.InvokeAsync<bool>("plcTags.saveState", JsonSerializer.Serialize(state, JsonOpts));
+        if (!ok && !Errors.Any(e => e.Contains("localStorage")))
+            Errors.Add("Состояние не сохранено: дерево слишком большое для localStorage.");
+    }
+
+    private async Task RestoreState()
+    {
+        var json = await JS.InvokeAsync<string?>("plcTags.loadState");
+        if (json == null) return;
+        try
+        {
+            var state = JsonSerializer.Deserialize<SavedState>(json, JsonOpts);
+            if (state == null || state.Version != 1) return;
+            foreach (var ss in state.Sources)
+            {
+                Sources.Add(new TagSource
+                {
+                    FileName = ss.FileName,
+                    FilePath = ss.FilePath,
+                    Vendor = ss.Vendor.EndsWith(" (сессия)") ? ss.Vendor : ss.Vendor + " (сессия)",
+                    HandleId = ss.HandleId,
+                    LastModified = ss.LastModified,
+                    LoadedAt = ss.LoadedAt
+                });
+                Sources.Last().Roots.AddRange(ss.Roots);
+            }
+            Tabs.AddRange(state.Tabs.Where(t => Sources.Any(s => s.FileName == t.SourceFile)));
+            ActiveTabId = Tabs.Any(t => t.Id == state.ActiveTab) ? state.ActiveTab : null;
+            ActiveSource = Math.Clamp(state.ActiveSource, Sources.Count > 0 ? 0 : -1, Sources.Count - 1);
+        }
+        catch { }
+    }
+
+    // ======== фильтры и поиск ========
+
+    public bool Matches(TagNode node)
+    {
+        bool textOk = string.IsNullOrEmpty(Filter)
+            || node.FullPath.Contains(Filter, StringComparison.OrdinalIgnoreCase)
+            || node.Comment.Contains(Filter, StringComparison.OrdinalIgnoreCase);
+        bool typeOk = TypeMatches(node);
+        if (textOk && typeOk) return true;
+        return node.Children.Any(Matches);
+    }
+
+    private bool TypeMatches(TagNode node)
+    {
+        if (string.IsNullOrEmpty(TypeFilter)) return true;
+        var tp = node.TypeName;
+        return TypeFilter switch
+        {
+            "BOOL" => tp is "BOOL" or "SAFEBOOL",
+            "INT" => Regex.IsMatch(tp, @"^(U?S?INT|U?DINT|U?LINT|BYTE|WORD|DWORD|LWORD)$", RegexOptions.IgnoreCase),
+            "REAL" => Regex.IsMatch(tp, @"^L?REAL$", RegexOptions.IgnoreCase),
+            "STRING" => Regex.IsMatch(tp, @"^(W?STRING|W?CHAR)", RegexOptions.IgnoreCase),
+            "TIME" => Regex.IsMatch(tp, @"^(L?TIME|L?DATE|D|TOD|LTOD|DT|LDT|TIME_OF_DAY|DATE_AND_TIME)$", RegexOptions.IgnoreCase),
+            "STRUCT" => node.Kind == NodeKind.Struct,
+            "ARRAY" => node.Kind is NodeKind.Array or NodeKind.ArrayItem,
+            _ => true
+        };
+    }
+
+    private void OnFilterChanged() { /* перерисовка по событию */ }
+
+    private async Task ClearFilter()
+    {
+        Filter = "";
+        await _searchRef.FocusAsync();
+    }
+
+    private async Task OnSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            Filter = "";
+            await _searchRef.FocusAsync();
+        }
+    }
+
+    public void Refresh() => StateHasChanged();
+
+    // ======== дерево: раскрытие, клавиатура ========
+
+    public bool IsExpanded(TagNode node) => _expanded.Contains(node);
+
+    public void ToggleExpanded(TagNode node)
+    {
+        if (!_expanded.Remove(node)) _expanded.Add(node);
+    }
+
+    private List<TagNode> FlattenVisible()
+    {
+        var list = new List<TagNode>();
+        foreach (var r in DisplayedRoots)
+        {
+            if (!Matches(r)) continue;
+            FlattenInto(r, list);
+        }
+        return list;
+    }
+
+    private void FlattenInto(TagNode n, List<TagNode> list)
+    {
+        list.Add(n);
+        bool expanded = IsExpanded(n) || (!string.IsNullOrEmpty(Filter) && n.Children.Any(Matches));
+        if (!expanded) return;
+        foreach (var c in n.Children)
+            if (Matches(c)) FlattenInto(c, list);
+    }
+
+    private async Task OnTreeKey(KeyboardEventArgs e)
+    {
+        _preventKeys = false;
+        if (e.CtrlKey && e.Key is "f" or "F" or "а" or "А")
+        {
+            _preventKeys = true;
+            await _searchRef.FocusAsync();
+            return;
+        }
+        if (e.CtrlKey && e.Key is "o" or "O" or "щ" or "Щ") { _preventKeys = true; if (ViewTabId == null) await OpenFiles(); return; }
+        if (e.Key == "F5") { _preventKeys = true; if (ViewTabId == null) await RefreshSource(Current); return; }
+        if (e.Key == "F1") { _preventKeys = true; _showHelp = !_showHelp; return; }
+        if (e.Key == "F12") { _preventKeys = true; await ToggleTheme(); return; }
+        if (e.Key == "Escape" && _showHelp) { _preventKeys = true; _showHelp = false; return; }
+        if (e.Key == "Escape" && _showSettings) { _preventKeys = true; _showSettings = false; return; }
+        // Ключи копирования: учитываем русскую раскладку (с) и регистр
+        bool keyC = e.Key is "c" or "C" or "с" or "С";
+        if (e.CtrlKey && e.ShiftKey && keyC && SelectedNode != null)
+        {
+            _preventKeys = true;
+            await Copy(SelectedNode.Name, "имя");
+            return;
+        }
+        if (e.CtrlKey && e.AltKey && keyC && SelectedNode != null)
+        {
+            _preventKeys = true;
+            await Copy(SelectedNode.Comment, "комментарий");
+            return;
+        }
+        if (e.CtrlKey && keyC && SelectedNode != null)
+        {
+            _preventKeys = true;
+            await Copy(SelectedNode.FullPath, "путь");
+            return;
+        }
+
+        var flat = FlattenVisible();
+        if (flat.Count == 0) return;
+        int idx = KeyboardNode != null ? flat.IndexOf(KeyboardNode) : -1;
+
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                _preventKeys = true;
+                idx = Math.Min(idx + 1, flat.Count - 1);
+                KeyboardNode = SelectedNode = flat[idx];
+                break;
+            case "ArrowUp":
+                _preventKeys = true;
+                idx = Math.Max(idx - 1, 0);
+                KeyboardNode = SelectedNode = flat[idx];
+                break;
+            case "ArrowRight":
+                if (KeyboardNode != null && !KeyboardNode.IsLeaf)
+                {
+                    _preventKeys = true;
+                    if (!IsExpanded(KeyboardNode)) _expanded.Add(KeyboardNode);
+                    else if (idx + 1 < flat.Count) KeyboardNode = SelectedNode = flat[idx + 1];
+                }
+                break;
+            case "ArrowLeft":
+                if (KeyboardNode != null)
+                {
+                    _preventKeys = true;
+                    if (!KeyboardNode.IsLeaf && IsExpanded(KeyboardNode)) _expanded.Remove(KeyboardNode);
+                    else
+                    {
+                        var parent = FindParent(DisplayedRoots, KeyboardNode);
+                        if (parent != null) KeyboardNode = SelectedNode = parent;
+                    }
+                }
+                break;
+            case "Enter":
+                if (KeyboardNode != null)
+                {
+                    _preventKeys = true;
+                    if (e.CtrlKey || KeyboardNode.IsLeaf) OpenTabFor(KeyboardNode);
+                    else ToggleExpanded(KeyboardNode);
+                }
+                break;
+            case " ":
+                if (KeyboardNode != null)
+                {
+                    _preventKeys = true;
+                    SelectedNode = KeyboardNode;
+                    if (!KeyboardNode.IsLeaf) ToggleExpanded(KeyboardNode);
+                }
+                break;
+            case "-":
+            case "_":
+                if (KeyboardNode != null && !KeyboardNode.IsLeaf && IsExpanded(KeyboardNode))
+                {
+                    _preventKeys = true;
+                    _expanded.Remove(KeyboardNode);
+                }
+                break;
+            case "+":
+            case "=":
+                if (KeyboardNode != null && !KeyboardNode.IsLeaf && !IsExpanded(KeyboardNode))
+                {
+                    _preventKeys = true;
+                    _expanded.Add(KeyboardNode);
+                }
+                break;
+        }
+    }
+
+    private static TagNode? FindParent(List<TagNode> roots, TagNode target)
+    {
+        foreach (var r in roots)
+        {
+            if (r.Children.Contains(target)) return r;
+            var p = FindParent(r.Children, target);
+            if (p != null) return p;
+        }
+        return null;
+    }
+
+    // ======== прочее ========
+
+    private void SelectSource(int idx)
+    {
+        ActiveSource = idx;
+        ActiveTabId = null;
+        SelectedNode = null;
+        _ = SaveState();
+    }
+
+    private async Task RemoveSource(int idx)
+    {
+        var src = Sources[idx];
+        var name = src.FileName;
+        if (src.HandleId != null)
+            await JS.InvokeVoidAsync("plcTags.dropHandles", new[] { src.HandleId });
+        Sources.RemoveAt(idx);
+        Tabs.RemoveAll(t => t.SourceFile == name);
+        if (Sources.Count == 0) ActiveSource = -1;
+        else if (ActiveSource >= Sources.Count) ActiveSource = Sources.Count - 1;
+        else if (idx <= ActiveSource && ActiveSource > 0) ActiveSource--;
+        SelectedNode = null;
+        _ = SaveState();
+    }
+
+    // ======== восстановление доступа к файлам (IndexedDB-хэндлы) ========
+
+    private readonly List<string> _pendingHandles = new();
+
+    private async Task RestoreHandles()
+    {
+        if (!await JS.InvokeAsync<bool>("plcTags.fsSupported")) return;
+        var ids = Sources.Where(s => !string.IsNullOrEmpty(s.HandleId)).Select(s => s.HandleId!).ToList();
+        if (ids.Count == 0) return;
+        var infos = await JS.InvokeAsync<List<JsHandleInfo>?>("plcTags.restoreHandles", ids);
+        if (infos == null) return;
+        foreach (var info in infos)
+        {
+            var src = Sources.FirstOrDefault(s => s.HandleId == info.Id);
+            if (src == null) continue;
+            if (info.Permission == "granted")
+            {
+                // доступ сохранён — молча перечитываем файл
+                var data = await JS.InvokeAsync<JsFile?>("plcTags.readFileByHandle", info.Id);
+                if (data?.Bytes != null) LoadOne(data);
+            }
+            else if (!_pendingHandles.Contains(info.Id))
+            {
+                _pendingHandles.Add(info.Id);
+            }
+        }
+    }
+
+    private async Task GrantAccess()
+    {
+        if (_pendingHandles.Count == 0) return;
+        var ids = _pendingHandles.ToList();
+        var result = await JS.InvokeAsync<JsResult>("plcTags.requestPermissions", ids);
+        _pendingHandles.Clear();
+        foreach (var id in result.Granted)
+        {
+            var data = await JS.InvokeAsync<JsFile?>("plcTags.readFileByHandle", id);
+            if (data?.Bytes != null) LoadOne(data);
+        }
+        await SaveState();
+    }
+
+    private sealed class JsResult
+    {
+        public List<string> Granted { get; set; } = new();
+        public List<string> Denied { get; set; } = new();
+    }
+
+    private void ClearAll()
+    {
+        Sources.Clear();
+        Tabs.Clear();
+        ActiveSource = -1;
+        ActiveTabId = null;
+        SelectedNode = null;
+        Errors.Clear();
+        _ = SaveState();
+    }
+
+    private async Task ToggleTheme()
+    {
+        Theme = Theme switch { "light" => "dark", "dark" => "cyberpunk", _ => "light" };
+        await JS.InvokeVoidAsync("plcTags.setTheme", Theme);
+        await JS.InvokeVoidAsync("plcTags.sfx", "click");
+    }
+
+    private async Task OnThemeChanged(ChangeEventArgs e)
+    {
+        Theme = e.Value?.ToString() ?? "dark";
+        await JS.InvokeVoidAsync("plcTags.setTheme", Theme);
+        await JS.InvokeVoidAsync("plcTags.sfx", "click");
+    }
+
+    private async Task Copy(string text, string what)
+    {
+        CopyNotice = await JS.InvokeAsync<bool>("plcTags.copyText", text);
+        CopyWhat = what;
+        await JS.InvokeVoidAsync("plcTags.sfx", CopyNotice ? "ok" : "error");
+        _ = Task.Delay(1500).ContinueWith(_ => { CopyNotice = false; InvokeAsync(StateHasChanged); });
+    }
+
+    private static string KindName(TagNode n) => n.Kind switch
+    {
+        NodeKind.Struct => "структура",
+        NodeKind.Array => "массив",
+        NodeKind.ArrayItem => "элемент массива",
+        _ => "переменная"
+    };
+
+    private void LoadDemo()
+    {
+        string xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            + "<SymbolConfiguration>\n"
+            + "  <Symbol><Name>GVL.Motor1.Speed</Name><Type>REAL</Type><Comment>Скорость двигателя</Comment></Symbol>\n"
+            + "  <Symbol><Name>GVL.Motor1.Run</Name><Type>BOOL</Type></Symbol>\n"
+            + "  <Symbol><Name>GVL.Motor1.Temp_ru</Name><Type>INT</Type><Comment>Температура</Comment><Comment_en>Temperature</Comment_en></Symbol>\n"
+            + "  <Symbol><Name>GVL.Temps[1]</Name><Type>INT</Type></Symbol>\n"
+            + "  <Symbol><Name>GVL.Temps[2]</Name><Type>INT</Type></Symbol>\n"
+            + "  <Symbol><Name>GVL.Temps[3]</Name><Type>INT</Type><Comment>Температура зоны 3</Comment></Symbol>\n"
+            + "  <Symbol><Name>GVL.Recipe.Rows[1].Name</Name><Type>STRING</Type><Comment>Имя строки рецепта</Comment></Symbol>\n"
+            + "  <Symbol><Name>GVL.Recipe.Rows[2].Name</Name><Type>STRING</Type></Symbol>\n"
+            + "  <Symbol><Name>GVL.Counter</Name><Type>DINT</Type></Symbol>\n"
+            + "  <Symbol><Name>GVL.CycleTime</Name><Type>TIME</Type></Symbol>\n"
+            + "  <Symbol><Name>GVL.Data</Name><Type>ARRAY[0..15] OF BYTE</Type></Symbol>\n"
+            + "</SymbolConfiguration>";
+        const string csv = "Name;Address;Data Type;Comment\nStation1.Temp;%MD100;REAL;Температура ванны 1\nStation1.Heater;%QX10.0;BOOL;ТЭН ванны\nStation2.Pump;%QX10.1;BOOL;";
+        LoadOne(new JsFile { Name = "Демо_CODESYS.xml", Bytes = System.Text.Encoding.UTF8.GetBytes(xml) });
+        LoadOne(new JsFile { Name = "Демо_SYSMAC.csv", Bytes = System.Text.Encoding.UTF8.GetBytes(csv) });
+        ActiveSource = 0;
+    }
+
+    private static string RuPlural(int n, string word)
+    {
+        return word switch
+        {
+            "файл" => n + Plural(n, " файл", " файла", " файлов"),
+            "тег" => n + Plural(n, " тег", " тега", " тегов"),
+            _ => n.ToString()
+        };
+    }
+
+    private static string Plural(int n, string one, string few, string many)
+    {
+        int m = Math.Abs(n) % 100, d = m % 10;
+        if (m > 10 && m < 20) return many;
+        if (d > 1 && d < 5) return few;
+        if (d == 1) return one;
+        return many;
+    }
+}

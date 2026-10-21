@@ -483,13 +483,32 @@ html.cyberpunk {
 /* --- среда: цифровая сетка 40px + scanlines поверх всего --- */
 html.cyberpunk body {
   background-image:
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 40px),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 40px);
+    linear-gradient(rgba(44, 201, 255, .05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(44, 201, 255, .05) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+/* блуждающее свечение: 140vmax радиальный градиент,
+   медленно плывёт по экрану и дышит масштабом (16 s) */
+html.cyberpunk body::before {
+  content: "";
+  position: fixed; pointer-events: none;
+  width: 140vmax; height: 140vmax; left: -20vmax; top: -20vmax;
+  background: radial-gradient(circle at center,
+    rgba(44, 201, 255, .14) 0%,
+    rgba(44, 201, 255, .05) 30%,
+    transparent 60%);
+  animation: cyWave 16s ease-in-out infinite alternate;
+}
+@keyframes cyWave {
+  0%   { transform: translate(-12vw, -8vh) scale(1); }
+  33%  { transform: translate(10vw, 6vh)  scale(1.15); }
+  66%  { transform: translate(-6vw, 10vh) scale(0.92); }
+  100% { transform: translate(12vw, -6vh) scale(1.08); }
 }
 html.cyberpunk body::after {
   content: "";
   position: fixed; inset: 0; z-index: 4000; pointer-events: none;
-  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .02) 0 1px, transparent 1px 3px);
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .005) 0 1px, transparent 1px 3px);
 }
 
 /* --- геометрия: углы прямые, лампы-индикаторы остаются круглыми --- */
@@ -506,6 +525,32 @@ html.cyberpunk .app-title {
   letter-spacing: .12em;
   color: var(--accent);
   text-shadow: 0 0 6px rgba(44, 201, 255, .6), 0 0 18px rgba(44, 201, 255, .25);
+}
+/* покадровое мерцание букв (неоновая лампа): 11 точек на 4 s */
+@keyframes cp-letter-flicker {
+  0%, 100% { opacity: 1; }
+  2.5%  { opacity: .35; }
+  4.5%  { opacity: 1; }
+  5.5%  { opacity: .7; }
+  7%    { opacity: 1; }
+  41%   { opacity: 1; }
+  42%   { opacity: .5; }
+  43.5% { opacity: 1; }
+  70%   { opacity: 1; }
+  70.8% { opacity: .8; }
+  71.6% { opacity: 1; }
+}
+html.cyberpunk .app-title span {
+  display: inline-block;
+  animation: cp-letter-flicker 4s linear infinite;
+  will-change: opacity;
+}
+/* активный глитч буквы: сдвиг, skew, янтарь, хроматическая аберрация */
+html.cyberpunk .app-title span.cp-glitching {
+  animation: none;
+  transform: translate(1.5px, -2px) skewX(-14deg);
+  color: #ffb020;
+  text-shadow: -2px 0 #2cc9ff, 2px 0 rgba(255, 45, 120, .9);
 }
 
 /* --- кнопки: hover = cyan, primary = cyan 13% + bloom --- */

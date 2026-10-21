@@ -50,6 +50,74 @@ window.plcTags = {
         try { document.title = title; } catch (e) { }
     },
 
+    // ---------- глитч-заголовок (киберпанк): мерцающие буквы + случайный глитч ----------
+    _glitchChars: 'ΞΔΨ§¤#/\\|<>≡≠∑√01',
+    _splitTitle: function (el) {
+        if (el.dataset.glitchInit) return;
+        el.dataset.glitchInit = "1";
+        var text = el.textContent;
+        el.textContent = "";
+        var frag = document.createDocumentFragment();
+        text.split("").forEach(function (ch) {
+            var s = document.createElement("span");
+            s.dataset.ch = ch;
+            s.textContent = ch === " " ? " " : ch;
+            s.style.animationDelay = (Math.random() * 7).toFixed(2) + "s";
+            s.style.animationDuration = (2.6 + Math.random() * 4.5).toFixed(2) + "s";
+            frag.appendChild(s);
+        });
+        el.appendChild(frag);
+    },
+    glitchifyTitles: function () {
+        var self = this;
+        var processTitle = function (el) {
+            // плейсхолдер view-режима — ждём, пока Blazor подставит реальный заголовок
+            if (!el.textContent || el.textContent.trim() === "Вкладка") return;
+            if (el.dataset.glitchInit && el.querySelector("span")) return;
+            // содержимое сброшено (Blazor перерендерил) — сплитим заново
+            if (el.dataset.glitchInit) delete el.dataset.glitchInit;
+            self._splitTitle(el);
+        };
+        var process = function (node) {
+            if (node.nodeType !== 1) return;
+            if (node.matches && node.matches(".app-title")) processTitle(node);
+            var found = node.querySelectorAll ? node.querySelectorAll(".app-title") : [];
+            for (var i = 0; i < found.length; i++) processTitle(found[i]);
+        };
+        process(document.body);
+        // Blazor пересоздаёт заголовок при рендере — подхватываем новые
+        var mo = new MutationObserver(function (muts) {
+            for (var m = 0; m < muts.length; m++) {
+                var added = muts[m].addedNodes;
+                for (var i = 0; i < added.length; i++) process(added[i]);
+            }
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
+        // случайный глитч одной буквы каждые 0.5–2.4 с (только в киберпанк-теме)
+        var loop = function () {
+            setTimeout(function () {
+                if (document.documentElement.classList.contains("cyberpunk")) {
+                    var titles = document.querySelectorAll(".app-title[data-glitch-init]");
+                    if (titles.length) {
+                        var el = titles[Math.floor(Math.random() * titles.length)];
+                        var spans = el.querySelectorAll("span");
+                        if (spans.length) {
+                            var g = spans[Math.floor(Math.random() * spans.length)];
+                            g.textContent = self._glitchChars[Math.floor(Math.random() * self._glitchChars.length)];
+                            g.classList.add("cp-glitching");
+                            setTimeout(function () {
+                                g.textContent = g.dataset.ch === " " ? " " : g.dataset.ch;
+                                g.classList.remove("cp-glitching");
+                            }, 90 + Math.random() * 160);
+                        }
+                    }
+                }
+                loop();
+            }, 500 + Math.random() * 1900);
+        };
+        loop();
+    },
+
     // ---------- настройки интерфейса (шрифт, размер, плотность) ----------
     _uiFonts: {
         system: '"Segoe UI", system-ui, sans-serif',
@@ -370,3 +438,6 @@ window.plcTags = {
 
 // Применить сохранённые настройки интерфейса сразу при загрузке (до старта Blazor)
 try { window.plcTags._applyUi(JSON.parse(localStorage.getItem("plctags-ui") || "{}")); } catch (e) { }
+
+// Глитч-заголовок: разбить на буквы и запустить цикл глитча (работает только в киберпанк-теме)
+try { window.plcTags.glitchifyTitles(); } catch (e) { }

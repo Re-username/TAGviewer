@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Просмотрщик тегов ПЛК</title>
+    <base href="./" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23185ea8'/%3E%3Cpath d='M8 9h16M13 16h11M13 23h11M10 9v14M10 16h3M10 23h3' stroke='white' stroke-width='2.2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E" />
+    <script>
+        // Тема до отрисовки, чтобы не было вспышки
+        (function () {
+            try {
+                var t = localStorage.getItem("plctags-theme");
+                if (t !== "dark" && t !== "light" && t !== "cyberpunk")
+                    t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+                if (t === "dark" || t === "cyberpunk") document.documentElement.classList.add(t);
+            } catch (e) { }
+        })();
+    </script>
+</head>
+
+<body>
+    <div id="app">
+        <div class="loading-screen">
+            <div class="spinner"></div>
+            <div>Загрузка просмотрщика тегов…</div>
+        </div>
+    </div>
+    <div id="blazor-error-ui">
+        Произошла ошибка. Перезагрузите страницу.
+        <a href="" class="reload">Перезагрузить</a>
+    </div>
+    <script src="js/app.js"></script>
+    <script src="_framework/blazor.webassembly.js" autostart="false"></script>
+    <script>
+        Blazor.start();
+    </script>
+</body>
+
+</html>
